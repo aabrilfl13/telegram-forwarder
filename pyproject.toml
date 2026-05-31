@@ -1,0 +1,27 @@
+[project]
+name = "resend-telegram-messages"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dotenv>=0.9.9",
+    "pyrogram>=2.0.106",
+    "tgcrypto>=1.2.5",
+]
+
+[dependency-groups]
+dev = [
+    "isort>=8.0.1",
+    "ruff>=0.15.15",
+]
+
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]  # I = isort rules
+
+[tool.isort]
+profile = "black"
