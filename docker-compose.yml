@@ -1,6 +1,6 @@
 services:
   telegram-forwarder:
-    image: ghcr.io/aabrilfl13/telegram-forwarder:latest
+    build: .
     restart: unless-stopped
     env_file:
       - .env
