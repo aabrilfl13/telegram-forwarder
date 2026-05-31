@@ -1,11 +1,8 @@
-# pip install pyrogram tgcrypto
-
-import asyncio
 import logging
 import os
 
 from dotenv import load_dotenv
-from pyrogram import Client, filters, idle
+from pyrogram import Client, filters
 
 load_dotenv()
 
@@ -25,7 +22,7 @@ logging.getLogger("pyrogram").setLevel(logging.INFO)
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ["SESSION_STRING"]
-SOURCE_GROUP_ID = os.environ["SOURCE_GROUP_ID"]
+SOURCE_GROUP_ID = int(os.environ["SOURCE_GROUP_ID"])
 DEST_GROUP_ID = int(os.environ["DEST_GROUP_ID"])
 
 # Obtain from https://my.telegram.org
@@ -37,7 +34,7 @@ app = Client(
 )
 
 
-@app.on_message(filters.chat(SOURCE_GROUP_ID))
+@app.on_message(filters.chat(SOURCE_GROUP_ID) & ~filters.service)
 async def resend(client, message):
     try:
         await message.forward(DEST_GROUP_ID)
@@ -46,11 +43,6 @@ async def resend(client, message):
         logger.error(f"Failed to forward message {message.id}: {e}", exc_info=True)
 
 
-async def main():
-    async with app:
-        logger.info(f"Bot started — listening to '{SOURCE_GROUP_ID}'")
-        logger.info(f"Forwarding to chat id {DEST_GROUP_ID}")
-        await idle()
-
-
-asyncio.run(main())
+logger.info(f"Bot starting — listening to '{SOURCE_GROUP_ID}'")
+logger.info(f"Forwarding to chat id {DEST_GROUP_ID}")
+app.run()
