@@ -12,6 +12,6 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Copy source
-COPY main.py .
+COPY app/main.py .
 
 CMD ["uv", "run", "python", "main.py"]
