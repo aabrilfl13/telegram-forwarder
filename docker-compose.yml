@@ -1,11 +1,12 @@
 services:
   telegram-forwarder:
-    image: ghcr.io/aabrilfl13/telegram-forwarder:latest
+    build: .
     restart: unless-stopped
     env_file:
       - .env
     volumes:
       - session_data:/app/session
+      - data:/app/data
     logging:
       driver: "json-file"
       options:
@@ -14,3 +15,4 @@ services:
 
 volumes:
   session_data:
+  data:

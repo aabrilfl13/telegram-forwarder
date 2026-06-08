@@ -18,8 +18,8 @@ WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
 
-COPY app/main.py .
+COPY app/ .
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-CMD ["python", "main.py"]
+CMD ["python", "listener.py"]
