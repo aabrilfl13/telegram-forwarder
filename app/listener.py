@@ -1,3 +1,5 @@
+import asyncio
+
 from common import (
     API_HASH,
     API_ID,
@@ -10,8 +12,6 @@ from common import (
     load_thread_mapping,
 )
 from logger import setup_logging
-import asyncio
-
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, MessageIdInvalid
 
@@ -28,11 +28,15 @@ app = Client(
 
 def _message_summary(message) -> str:
     sender = (
-        getattr(message.from_user, "username", None)
-        or getattr(message.from_user, "first_name", None)
-        or getattr(message.sender_chat, "title", None)
-        or "unknown"
-    ) if (message.from_user or message.sender_chat) else "unknown"
+        (
+            getattr(message.from_user, "username", None)
+            or getattr(message.from_user, "first_name", None)
+            or getattr(message.sender_chat, "title", None)
+            or "unknown"
+        )
+        if (message.from_user or message.sender_chat)
+        else "unknown"
+    )
     text = (message.text or message.caption or "")[:80]
     preview = f" | {text!r}" if text else " | [no text]"
     return f"id={message.id} thread={message.message_thread_id} from={sender}{preview}"
@@ -55,10 +59,10 @@ async def resend(client, message):
     dest_thread_id = entry["dest"]
     logger.debug(f"Routing message {message.id}: src thread {src_thread_id} → dest thread {dest_thread_id}")
 
-    forwarded_origins = await load_forwarded_origins(client, dest_thread_id)
-    if is_already_in_group_chat(message, forwarded_origins):
-        logger.info(f"Skipping message {message.id} — already in dest thread {dest_thread_id}")
-        return
+    # forwarded_origins = await load_forwarded_origins(client, dest_thread_id)
+    # if is_already_in_group_chat(message, forwarded_origins):
+    #     logger.info(f"Skipping message {message.id} — already in dest thread {dest_thread_id}")
+    #     return
 
     try:
         await client.forward_messages(
@@ -80,7 +84,9 @@ async def resend(client, message):
                 message_ids=message.id,
                 message_thread_id=dest_thread_id,
             )
-            logger.info(f"Forwarded message {message.id} (after FloodWait): src thread {src_thread_id} → dest thread {dest_thread_id}")
+            logger.info(
+                f"Forwarded message {message.id} (after FloodWait): src thread {src_thread_id} → dest thread {dest_thread_id}"
+            )
         except Exception as retry_e:
             logger.error(f"Failed to forward message {message.id} after FloodWait retry: {retry_e}", exc_info=True)
     except Exception as e:
