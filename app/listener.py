@@ -19,6 +19,7 @@ logger = setup_logging("listener")
 logger.info(f"Loaded {len(load_thread_mapping())} thread mappings")
 
 _db = None
+_save_queue: asyncio.Queue | None = None
 
 
 def _message_summary(message) -> str:
@@ -37,6 +38,20 @@ def _message_summary(message) -> str:
     return f"id={message.id} thread={message.message_thread_id} from={sender}{preview}"
 
 
+async def _db_worker() -> None:
+    """Single consumer — serializes all DB writes to avoid concurrent write contention."""
+    while True:
+        message = await _save_queue.get()
+        if message is None:
+            break
+        try:
+            await save_message(_db, message)
+        except Exception as exc:
+            logger.error(f"DB save failed for message {message.id}: {exc}")
+        finally:
+            _save_queue.task_done()
+
+
 async def resend(client, message):
     logger.debug(f"Received: {_message_summary(message)}")
     src_thread_id = message.message_thread_id or 1
@@ -46,11 +61,8 @@ async def resend(client, message):
         logger.warning(f"No mapping for source thread {src_thread_id} (message {message.id}) — skipping")
         return
 
-    if _db is not None:
-        try:
-            await save_message(_db, message)
-        except Exception as exc:
-            logger.error(f"DB save failed for message {message.id}: {exc}")
+    if _save_queue is not None:
+        await _save_queue.put(message)
 
     if not entry.get("enabled", False):
         logger.info(f"Thread {src_thread_id} disabled — skipping message {message.id}")
@@ -90,8 +102,11 @@ async def resend(client, message):
 
 
 async def main():
-    global _db
+    global _db, _save_queue
+
     _db = await init_db()
+    _save_queue = asyncio.Queue()
+    worker = asyncio.create_task(_db_worker())
 
     app = Client(
         "session/mi_session",
@@ -106,6 +121,9 @@ async def main():
             logger.info(f"Listener starting — source chat {SOURCE_GROUP_ID} → dest chat {DEST_GROUP_ID}")
             await asyncio.Event().wait()
     finally:
+        await _save_queue.join()       # wait for all pending saves to finish
+        await _save_queue.put(None)    # stop the worker
+        await worker
         await _db.dispose()
         logger.info("Database closed")
 
