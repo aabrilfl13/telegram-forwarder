@@ -1,5 +1,8 @@
 import asyncio
+import json
+import os
 
+import redis.asyncio as aioredis
 from common import (
     API_HASH,
     API_ID,
@@ -18,8 +21,12 @@ from pyrogram.handlers import MessageHandler
 logger = setup_logging("listener")
 logger.info(f"Loaded {len(load_thread_mapping())} thread mappings")
 
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+QUEUE_KEY = "telegram:save_queue"
+
 _db = None
-_save_queue: asyncio.Queue | None = None
+_redis: aioredis.Redis | None = None
+_running = True
 
 
 def _message_summary(message) -> str:
@@ -39,17 +46,19 @@ def _message_summary(message) -> str:
 
 
 async def _db_worker() -> None:
-    """Single consumer — serializes all DB writes to avoid concurrent write contention."""
-    while True:
-        message = await _save_queue.get()
-        if message is None:
-            break
+    """Single consumer — pops messages from Redis and saves to DB one at a time."""
+    logger.info("DB worker started")
+    while _running:
+        result = await _redis.blpop(QUEUE_KEY, timeout=1)
+        if result is None:
+            continue
+        _, raw = result
         try:
-            await save_message(_db, message)
+            data = json.loads(raw)
+            await save_message(_db, data)
         except Exception as exc:
-            logger.error(f"DB save failed for message {message.id}: {exc}")
-        finally:
-            _save_queue.task_done()
+            logger.error(f"DB save failed: {exc}")
+    logger.info("DB worker stopped")
 
 
 async def resend(client, message):
@@ -61,8 +70,11 @@ async def resend(client, message):
         logger.warning(f"No mapping for source thread {src_thread_id} (message {message.id}) — skipping")
         return
 
-    if _save_queue is not None:
-        await _save_queue.put(message)
+    if _redis is not None:
+        try:
+            await _redis.rpush(QUEUE_KEY, json.dumps(message.to_dict(), default=str))
+        except Exception as exc:
+            logger.error(f"Redis enqueue failed for message {message.id}: {exc}")
 
     if not entry.get("enabled", False):
         logger.info(f"Thread {src_thread_id} disabled — skipping message {message.id}")
@@ -102,10 +114,15 @@ async def resend(client, message):
 
 
 async def main():
-    global _db, _save_queue
+    global _db, _redis, _running
 
     _db = await init_db()
-    _save_queue = asyncio.Queue()
+    _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+
+    pending = await _redis.llen(QUEUE_KEY)
+    if pending:
+        logger.warning(f"Found {pending} unsaved messages in Redis from previous run — replaying now")
+
     worker = asyncio.create_task(_db_worker())
 
     app = Client(
@@ -121,11 +138,11 @@ async def main():
             logger.info(f"Listener starting — source chat {SOURCE_GROUP_ID} → dest chat {DEST_GROUP_ID}")
             await asyncio.Event().wait()
     finally:
-        await _save_queue.join()       # wait for all pending saves to finish
-        await _save_queue.put(None)    # stop the worker
+        _running = False
         await worker
+        await _redis.aclose()
         await _db.dispose()
-        logger.info("Database closed")
+        logger.info("Shutdown complete")
 
 
 asyncio.run(main())
