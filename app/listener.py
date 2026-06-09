@@ -10,7 +10,10 @@ from common import (
     load_thread_mapping,
     setup_logging,
 )
+import asyncio
+
 from pyrogram import Client, filters
+from pyrogram.errors import FloodWait
 
 logger = setup_logging("listener")
 logger.info(f"Loaded {len(load_thread_mapping())} thread mappings")
@@ -51,6 +54,19 @@ async def resend(client, message):
             message_thread_id=dest_thread_id,
         )
         logger.info(f"Forwarded message {message.id}: src thread {src_thread_id} → dest thread {dest_thread_id}")
+    except FloodWait as e:
+        logger.warning(f"FloodWait {e.value}s for message {message.id} — waiting and retrying")
+        await asyncio.sleep(e.value)
+        try:
+            await client.forward_messages(
+                chat_id=DEST_GROUP_ID,
+                from_chat_id=SOURCE_GROUP_ID,
+                message_ids=message.id,
+                message_thread_id=dest_thread_id,
+            )
+            logger.info(f"Forwarded message {message.id} (after FloodWait): src thread {src_thread_id} → dest thread {dest_thread_id}")
+        except Exception as retry_e:
+            logger.error(f"Failed to forward message {message.id} after FloodWait retry: {retry_e}", exc_info=True)
     except Exception as e:
         logger.error(f"Failed to forward message {message.id}: {e}", exc_info=True)
 
