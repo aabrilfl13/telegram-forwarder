@@ -41,7 +41,7 @@ def _message_summary(message) -> str:
 @app.on_message(filters.chat(SOURCE_GROUP_ID) & ~filters.service)
 async def resend(client, message):
     logger.debug(f"Received: {_message_summary(message)}")
-    src_thread_id = message.message_thread_id
+    src_thread_id = message.message_thread_id or 1
     entry = get_mapping_entry(src_thread_id)
 
     if entry is None:
