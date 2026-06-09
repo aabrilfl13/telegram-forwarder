@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 
+from logger import setup_logging
 from pyrogram.types import Message
 from sqlalchemy import (
     BigInteger,
@@ -18,6 +19,8 @@ from sqlalchemy import (
     select,
 )
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+
+logger = setup_logging("db")
 
 DB_PATH = Path(__file__).parent / "data" / "messages.db"
 _DEFAULT_URL = f"sqlite+aiosqlite:///{DB_PATH}"
@@ -133,6 +136,7 @@ async def init_db(url: str | None = None) -> AsyncEngine:
     async with engine.begin() as conn:
         await conn.run_sync(_metadata.create_all)
 
+    logger.info(f"Database ready — {db_url}")
     return engine
 
 
@@ -301,4 +305,8 @@ async def save_message(engine: AsyncEngine, message: Message) -> int:
                     )
                 )
 
+    logger.debug(
+        f"Saved message telegram_id={message.id} chat={message.chat.id} "
+        f"topic={message.message_thread_id or 1} media={media_type or 'none'} → row_id={message_row_id}"
+    )
     return message_row_id
