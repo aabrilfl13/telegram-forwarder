@@ -7,10 +7,9 @@ from common import (
     SESSION_STRING,
     SOURCE_GROUP_ID,
     get_mapping_entry,
-    is_already_in_group_chat,
-    load_forwarded_origins,
     load_thread_mapping,
 )
+from db import init_db, save_message
 from logger import setup_logging
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, MessageIdInvalid
@@ -24,6 +23,8 @@ app = Client(
     api_hash=API_HASH,
     session_string=SESSION_STRING,
 )
+
+_db = None
 
 
 def _message_summary(message) -> str:
@@ -52,17 +53,18 @@ async def resend(client, message):
         logger.warning(f"No mapping for source thread {src_thread_id} (message {message.id}) — skipping")
         return
 
+    if _db is not None:
+        try:
+            await save_message(_db, message)
+        except Exception as exc:
+            logger.error(f"DB save failed for message {message.id}: {exc}")
+
     if not entry.get("enabled", False):
         logger.info(f"Thread {src_thread_id} disabled — skipping message {message.id}")
         return
 
     dest_thread_id = entry["dest"]
     logger.debug(f"Routing message {message.id}: src thread {src_thread_id} → dest thread {dest_thread_id}")
-
-    # forwarded_origins = await load_forwarded_origins(client, dest_thread_id)
-    # if is_already_in_group_chat(message, forwarded_origins):
-    #     logger.info(f"Skipping message {message.id} — already in dest thread {dest_thread_id}")
-    #     return
 
     try:
         await client.forward_messages(
@@ -93,5 +95,17 @@ async def resend(client, message):
         logger.error(f"Failed to forward message {message.id}: {e}", exc_info=True)
 
 
-logger.info(f"Listener starting — source chat {SOURCE_GROUP_ID} → dest chat {DEST_GROUP_ID}")
-app.run()
+async def main():
+    global _db
+    _db = await init_db()
+    logger.info("Database initialized")
+    try:
+        async with app:
+            logger.info(f"Listener starting — source chat {SOURCE_GROUP_ID} → dest chat {DEST_GROUP_ID}")
+            await asyncio.Event().wait()
+    finally:
+        await _db.dispose()
+        logger.info("Database closed")
+
+
+asyncio.run(main())

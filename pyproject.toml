@@ -5,10 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "aiosqlite>=0.21.0",
     "dotenv>=0.9.9",
     "kurigram>=2.2.23",
+    "sqlalchemy[asyncio]>=2.0",
     "tgcrypto>=1.2.5",
 ]
+
+[project.optional-dependencies]
+postgres = ["asyncpg>=0.29.0"]
 
 [dependency-groups]
 dev = [

@@ -13,6 +13,7 @@ from common import (
     load_forwarded_origins,
     load_thread_mapping,
 )
+from db import init_db, save_message
 from logger import setup_logging
 from pyrogram import Client
 from pyrogram.errors import FloodWait
@@ -30,17 +31,12 @@ def load_enabled_mapping() -> dict[int, int]:
 
 
 async def forward_one(app: Client, message_id: int, dest_thread_id: int):
-    """Forward a single source message into the destination thread.
-
-    Returns the resulting Message in the destination, or None on failure.
-    """
     result = await app.forward_messages(
         chat_id=DEST_GROUP_ID,
         from_chat_id=SOURCE_GROUP_ID,
         message_ids=message_id,
         message_thread_id=dest_thread_id,
     )
-    # forward_messages returns Message | list[Message] depending on input
     return result[0] if isinstance(result, list) else result
 
 
@@ -71,7 +67,14 @@ async def pin_in_destination(app: Client, dest_message_id: int) -> bool:
         return False
 
 
-async def populate_thread(app: Client, src_thread_id: int, dest_thread_id: int, stats: dict, debug_fh=None) -> int:
+async def populate_thread(
+    app: Client,
+    src_thread_id: int,
+    dest_thread_id: int,
+    stats: dict,
+    debug_fh=None,
+    db=None,
+) -> int:
     pending: list[TelegramMessage] = []
     if debug_fh:
         debug_fh.write(f"\n{'=' * 60}\n")
@@ -90,8 +93,14 @@ async def populate_thread(app: Client, src_thread_id: int, dest_thread_id: int, 
             debug_fh.flush()
 
         if message.service is not None:
-            # service messages (topic created/renamed, pins, etc.) can't be forwarded
             continue
+
+        if db is not None:
+            try:
+                await save_message(db, message)
+            except Exception as exc:
+                logger.error(f"DB save failed for message {message.id}: {exc}")
+
         pending.append(message)
 
     if not pending:
@@ -169,9 +178,11 @@ async def main(debug: bool = False):
     if debug:
         logger.info(f"Debug mode ON — dumping messages to {DEBUG_DUMP_PATH}")
 
+    db = await init_db()
+    logger.info("Database initialized")
+
     try:
         async with Client("session/mi_session", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING) as app:
-            # Warm up the peer cache by walking dialogs first.
             target = None
             async for dialog in app.get_dialogs():
                 if dialog.chat.id == SOURCE_GROUP_ID:
@@ -186,12 +197,14 @@ async def main(debug: bool = False):
 
             for src_thread_id, dest_thread_id in mapping.items():
                 logger.info(f"Populating: src thread {src_thread_id} → dest thread {dest_thread_id}")
-                count = await populate_thread(app, src_thread_id, dest_thread_id, stats, debug_fh)
+                count = await populate_thread(app, src_thread_id, dest_thread_id, stats, debug_fh, db=db)
                 total_forwarded += count
                 logger.info(f"Done: forwarded {count} messages to dest thread {dest_thread_id}")
     finally:
         if debug_fh:
             debug_fh.close()
+        await db.dispose()
+        logger.info("Database closed")
 
     logger.info("=" * 60)
     logger.info(f"Summary — forwarded: {total_forwarded}")
