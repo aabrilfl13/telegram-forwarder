@@ -8,8 +8,8 @@ from common import (
     is_already_in_group_chat,
     load_forwarded_origins,
     load_thread_mapping,
-    setup_logging,
 )
+from logger import setup_logging
 import asyncio
 
 from pyrogram import Client, filters

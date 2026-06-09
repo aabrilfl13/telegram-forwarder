@@ -12,8 +12,8 @@ from common import (
     is_already_in_group_chat,
     load_forwarded_origins,
     load_thread_mapping,
-    setup_logging,
 )
+from logger import setup_logging
 from pyrogram import Client
 from pyrogram.errors import FloodWait
 
