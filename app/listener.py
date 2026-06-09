@@ -13,7 +13,7 @@ from common import (
 import asyncio
 
 from pyrogram import Client, filters
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, MessageIdInvalid
 
 logger = setup_logging("listener")
 logger.info(f"Loaded {len(load_thread_mapping())} thread mappings")
@@ -54,6 +54,8 @@ async def resend(client, message):
             message_thread_id=dest_thread_id,
         )
         logger.info(f"Forwarded message {message.id}: src thread {src_thread_id} → dest thread {dest_thread_id}")
+    except MessageIdInvalid:
+        logger.warning(f"Message {message.id} no longer exists — skipping")
     except FloodWait as e:
         logger.warning(f"FloodWait {e.value}s for message {message.id} — waiting and retrying")
         await asyncio.sleep(e.value)
