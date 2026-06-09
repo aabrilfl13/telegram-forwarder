@@ -26,8 +26,21 @@ app = Client(
 )
 
 
+def _message_summary(message) -> str:
+    sender = (
+        getattr(message.from_user, "username", None)
+        or getattr(message.from_user, "first_name", None)
+        or getattr(message.sender_chat, "title", None)
+        or "unknown"
+    ) if (message.from_user or message.sender_chat) else "unknown"
+    text = (message.text or message.caption or "")[:80]
+    preview = f" | {text!r}" if text else " | [no text]"
+    return f"id={message.id} thread={message.message_thread_id} from={sender}{preview}"
+
+
 @app.on_message(filters.chat(SOURCE_GROUP_ID) & ~filters.service)
 async def resend(client, message):
+    logger.debug(f"Received: {_message_summary(message)}")
     src_thread_id = message.message_thread_id
     entry = get_mapping_entry(src_thread_id)
 
@@ -40,6 +53,7 @@ async def resend(client, message):
         return
 
     dest_thread_id = entry["dest"]
+    logger.debug(f"Routing message {message.id}: src thread {src_thread_id} → dest thread {dest_thread_id}")
 
     forwarded_origins = await load_forwarded_origins(client, dest_thread_id)
     if is_already_in_group_chat(message, forwarded_origins):

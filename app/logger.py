@@ -1,4 +1,5 @@
 import logging
+import os
 
 
 class _ColorFormatter(logging.Formatter):
@@ -25,8 +26,9 @@ def setup_logging(name: str) -> logging.Logger:
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     )
+    level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(level)
     if not root.handlers:
         root.addHandler(handler)
     logging.getLogger("pyrogram").setLevel(logging.INFO)
