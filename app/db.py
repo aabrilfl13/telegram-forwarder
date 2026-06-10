@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 
 logger = setup_logging("db")
 
-DB_PATH = Path(__file__).parent / "data" / "docker-data" / "messages.db"
+DB_PATH = Path(__file__).parent / "data" / "messages.db"
 _DEFAULT_URL = f"sqlite+aiosqlite:///{DB_PATH}"
 
 _metadata = MetaData()
@@ -57,6 +57,8 @@ _telegram_users = Table(
     Column("first_name", Text),
     Column("last_name", Text),
     Column("is_bot", Integer, nullable=False, server_default="0"),
+    Column("photo_small_file_id", Text),
+    Column("photo_big_file_id", Text),
     Column("updated_at", Text, server_default=func.current_timestamp()),
 )
 
@@ -148,6 +150,8 @@ async def init_db(url: str | None = None) -> AsyncEngine:
 async def _migrate(conn: AsyncConnection) -> None:
     """Add columns introduced after the initial schema, safe to run on existing DBs."""
     new_cols = [
+        ("telegram_users", "photo_small_file_id", "TEXT"),
+        ("telegram_users", "photo_big_file_id", "TEXT"),
         ("messages", "reply_to_top_telegram_id", "INTEGER"),
         ("messages", "reply_to_user_id", "INTEGER"),
         ("messages", "reply_to_text", "TEXT"),
@@ -209,12 +213,15 @@ async def _upsert_telegram_user(
 ) -> int | None:
     if telegram_user is None:
         return None
+    photo = getattr(telegram_user, "photo", None)
     ins = _insert(engine, _telegram_users).values(
         id=telegram_user.id,
         username=getattr(telegram_user, "username", None),
         first_name=getattr(telegram_user, "first_name", None),
         last_name=getattr(telegram_user, "last_name", None),
         is_bot=int(getattr(telegram_user, "is_bot", False)),
+        photo_small_file_id=getattr(photo, "small_file_id", None),
+        photo_big_file_id=getattr(photo, "big_file_id", None),
     )
     await conn.execute(
         ins.on_conflict_do_update(
@@ -223,6 +230,10 @@ async def _upsert_telegram_user(
                 "username": ins.excluded.username,
                 "first_name": ins.excluded.first_name,
                 "last_name": ins.excluded.last_name,
+                "photo_small_file_id": func.coalesce(
+                    ins.excluded.photo_small_file_id, _telegram_users.c.photo_small_file_id
+                ),
+                "photo_big_file_id": func.coalesce(ins.excluded.photo_big_file_id, _telegram_users.c.photo_big_file_id),
                 "updated_at": func.current_timestamp(),
             },
         )
