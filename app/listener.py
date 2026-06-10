@@ -24,6 +24,9 @@ logger.info(f"Loaded {len(load_thread_mapping())} thread mappings")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 QUEUE_KEY = "telegram:save_queue"
 
+DRY_RUN_FORWARD = os.getenv("DRY_RUN_FORWARD", "").lower() in ("1", "true", "yes")
+DRY_RUN_DB = os.getenv("DRY_RUN_DB", "").lower() in ("1", "true", "yes")
+
 _db = None
 _redis: aioredis.Redis | None = None
 _running = True
@@ -70,9 +73,11 @@ async def resend(client, message):
         logger.warning(f"No mapping for source thread {src_thread_id} (message {message.id}) — skipping")
         return
 
-    if _redis is not None:
+    if DRY_RUN_DB:
+        logger.info(f"[DRY_RUN_DB] Would enqueue message {message.id} (thread {src_thread_id}) for DB save")
+    elif _redis is not None:
         try:
-            await _redis.rpush(QUEUE_KEY, json.dumps(message.to_dict(), default=str))
+            await _redis.rpush(QUEUE_KEY, str(message))
         except Exception as exc:
             logger.error(f"Redis enqueue failed for message {message.id}: {exc}")
 
@@ -81,7 +86,13 @@ async def resend(client, message):
         return
 
     dest_thread_id = entry["dest"]
-    logger.debug(f"Routing message {message.id}: src thread {src_thread_id} → dest thread {dest_thread_id}")
+
+    if DRY_RUN_FORWARD:
+        logger.info(
+            f"[DRY_RUN_FORWARD] Would forward message {message.id}: "
+            f"src thread {src_thread_id} → dest thread {dest_thread_id}"
+        )
+        return
 
     try:
         await client.forward_messages(
@@ -115,6 +126,11 @@ async def resend(client, message):
 
 async def main():
     global _db, _redis, _running
+
+    if DRY_RUN_FORWARD:
+        logger.warning("DRY_RUN_FORWARD enabled — messages will NOT be forwarded")
+    if DRY_RUN_DB:
+        logger.warning("DRY_RUN_DB enabled — messages will NOT be saved to DB or Redis")
 
     _db = await init_db()
     _redis = aioredis.from_url(REDIS_URL, decode_responses=True)
