@@ -17,12 +17,13 @@ from sqlalchemy import (
     event,
     func,
     select,
+    text,
 )
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 logger = setup_logging("db")
 
-DB_PATH = Path(__file__).parent / "data" / "messages.db"
+DB_PATH = Path(__file__).parent / "data" / "docker-data" / "messages.db"
 _DEFAULT_URL = f"sqlite+aiosqlite:///{DB_PATH}"
 
 _metadata = MetaData()
@@ -70,6 +71,9 @@ _messages = Table(
     Column("text", Text),
     Column("date", Text, nullable=False),
     Column("reply_to_telegram_id", BigInteger),
+    Column("reply_to_top_telegram_id", BigInteger),
+    Column("reply_to_user_id", BigInteger, ForeignKey("telegram_users.id")),
+    Column("reply_to_text", Text),
     Column("has_media", Integer, nullable=False, server_default="0"),
     Column("media_type", String(32)),
     Column("raw_json", Text),
@@ -135,9 +139,24 @@ async def init_db(url: str | None = None) -> AsyncEngine:
 
     async with engine.begin() as conn:
         await conn.run_sync(_metadata.create_all)
+        await _migrate(conn)
 
     logger.info(f"Database ready — {db_url}")
     return engine
+
+
+async def _migrate(conn: AsyncConnection) -> None:
+    """Add columns introduced after the initial schema, safe to run on existing DBs."""
+    new_cols = [
+        ("messages", "reply_to_top_telegram_id", "INTEGER"),
+        ("messages", "reply_to_user_id", "INTEGER"),
+        ("messages", "reply_to_text", "TEXT"),
+    ]
+    for table, col, col_type in new_cols:
+        try:
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+        except Exception:
+            pass  # column already exists
 
 
 async def _upsert_chat(engine: AsyncEngine, conn: AsyncConnection, chat) -> int:
@@ -276,7 +295,7 @@ async def save_message(engine: AsyncEngine, message) -> int:
     raw_json = _to_raw_json(message)
     message = _to_msg(message)
     media_type, media_obj = _extract_media(message)
-    text = getattr(message, "text", None) or getattr(message, "caption", None)
+    msg_text = getattr(message, "text", None) or getattr(message, "caption", None)
     date = getattr(message, "date", None)
     date_str = date.isoformat() if hasattr(date, "isoformat") else (str(date) if date else None)
 
@@ -285,14 +304,25 @@ async def save_message(engine: AsyncEngine, message) -> int:
         topic_row_id = await _upsert_topic(engine, conn, message.chat.id, message.message_thread_id or 1)
         telegram_user_row_id = await _upsert_telegram_user(engine, conn, message.from_user)
 
+        reply_msg = getattr(message, "reply_to_message", None)
+        reply_to_top_telegram_id = getattr(message, "reply_to_top_message_id", None)
+        reply_to_user_row_id = None
+        reply_to_text = None
+        if reply_msg is not None:
+            reply_to_user_row_id = await _upsert_telegram_user(engine, conn, getattr(reply_msg, "from_user", None))
+            reply_to_text = getattr(reply_msg, "text", None) or getattr(reply_msg, "caption", None)
+
         ins = _insert(engine, _messages).values(
             telegram_id=message.id,
             chat_id=message.chat.id,
             topic_id=topic_row_id,
             user_id=telegram_user_row_id,
-            text=text,
+            text=msg_text,
             date=date_str,
             reply_to_telegram_id=message.reply_to_message_id,
+            reply_to_top_telegram_id=reply_to_top_telegram_id,
+            reply_to_user_id=reply_to_user_row_id,
+            reply_to_text=reply_to_text,
             has_media=int(media_obj is not None),
             media_type=media_type,
             raw_json=raw_json,
@@ -303,6 +333,8 @@ async def save_message(engine: AsyncEngine, message) -> int:
                 set_={
                     "text": func.coalesce(ins.excluded.text, _messages.c.text),
                     "user_id": func.coalesce(ins.excluded.user_id, _messages.c.user_id),
+                    "reply_to_user_id": func.coalesce(ins.excluded.reply_to_user_id, _messages.c.reply_to_user_id),
+                    "reply_to_text": func.coalesce(ins.excluded.reply_to_text, _messages.c.reply_to_text),
                     "has_media": ins.excluded.has_media,
                     "media_type": func.coalesce(ins.excluded.media_type, _messages.c.media_type),
                 },

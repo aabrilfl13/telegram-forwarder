@@ -13,14 +13,15 @@ from common import (
     load_forwarded_origins,
     load_thread_mapping,
 )
-from db import init_db, save_message
+from db import init_db
 from logger import setup_logging
 from pyrogram import Client
 from pyrogram.errors import FloodWait
+from save_queue import connect_redis, db_worker, drain_and_stop, enqueue
 
 logger = setup_logging("populate")
 
-MESSAGES_PER_THREAD = 500
+MESSAGES_PER_THREAD = 10
 SLEEP_BETWEEN_FORWARDS = 0.75  # seconds
 DEBUG_DUMP_PATH = Path(__file__).parent / "data" / "messages_debug.log"
 
@@ -73,7 +74,10 @@ async def populate_thread(
     dest_thread_id: int,
     stats: dict,
     debug_fh=None,
+    redis=None,
     db=None,
+    no_forward: bool = False,
+    no_db: bool = False,
 ) -> int:
     pending: list[TelegramMessage] = []
     if debug_fh:
@@ -95,12 +99,6 @@ async def populate_thread(
         if message.service is not None:
             continue
 
-        if db is not None:
-            try:
-                await save_message(db, message)
-            except Exception as exc:
-                logger.error(f"DB save failed for message {message.id}: {exc}")
-
         pending.append(message)
 
     if not pending:
@@ -117,44 +115,62 @@ async def populate_thread(
             logger.debug(f"Skipping message {message.id} — already in dest thread {dest_thread_id}")
             continue
 
+        if not no_db:
+            if redis is not None:
+                await enqueue(redis, message)
+            elif db is not None:
+                try:
+                    from db import save_message
+
+                    await save_message(db, message)
+                except Exception as exc:
+                    logger.error(f"DB save failed for message {message.id}: {exc}")
+
         new_message = None
-        try:
-            new_message = await forward_one(app, message.id, dest_thread_id)
-            forwarded += 1
-        except FloodWait as e:
-            stats["floodwait_count"] += 1
-            stats["floodwait_total_seconds"] += e.value
-            stats["floodwait_max_seconds"] = max(stats["floodwait_max_seconds"], e.value)
-            logger.warning(
-                f"⚠️  FloodWait #{stats['floodwait_count']}: {e.value}s on message {message.id} "
-                f"(thread {src_thread_id}) — sleeping. "
-                f"Total wait so far: {stats['floodwait_total_seconds']}s"
+        if no_forward:
+            logger.info(
+                f"[--no-forward] Would forward message {message.id}: "
+                f"src thread {src_thread_id} → dest thread {dest_thread_id}"
             )
-            await asyncio.sleep(e.value + 1)
+            forwarded += 1
+        else:
             try:
                 new_message = await forward_one(app, message.id, dest_thread_id)
                 forwarded += 1
-            except FloodWait as e2:
+            except FloodWait as e:
                 stats["floodwait_count"] += 1
-                stats["floodwait_total_seconds"] += e2.value
-                stats["floodwait_max_seconds"] = max(stats["floodwait_max_seconds"], e2.value)
-                logger.warning(f"⚠️  FloodWait on retry: {e2.value}s — giving up on message {message.id}")
-            except Exception as e2:
-                logger.error(f"Retry failed for {message.id}: {e2}")
-        except Exception as e:
-            stats["other_errors"] += 1
-            logger.error(
-                f"Failed to forward {message.id} (src thread {src_thread_id} → dest thread {dest_thread_id}): {e}"
-            )
-
-        if message.pinned and new_message is not None:
-            if await pin_in_destination(app, new_message.id):
-                pinned_count += 1
-                logger.info(
-                    f"📌 Pinned {new_message.id} in dest thread {dest_thread_id} (was pinned in source as {message.id})"
+                stats["floodwait_total_seconds"] += e.value
+                stats["floodwait_max_seconds"] = max(stats["floodwait_max_seconds"], e.value)
+                logger.warning(
+                    f"⚠️  FloodWait #{stats['floodwait_count']}: {e.value}s on message {message.id} "
+                    f"(thread {src_thread_id}) — sleeping. "
+                    f"Total wait so far: {stats['floodwait_total_seconds']}s"
+                )
+                await asyncio.sleep(e.value + 1)
+                try:
+                    new_message = await forward_one(app, message.id, dest_thread_id)
+                    forwarded += 1
+                except FloodWait as e2:
+                    stats["floodwait_count"] += 1
+                    stats["floodwait_total_seconds"] += e2.value
+                    stats["floodwait_max_seconds"] = max(stats["floodwait_max_seconds"], e2.value)
+                    logger.warning(f"⚠️  FloodWait on retry: {e2.value}s — giving up on message {message.id}")
+                except Exception as e2:
+                    logger.error(f"Retry failed for {message.id}: {e2}")
+            except Exception as e:
+                stats["other_errors"] += 1
+                logger.error(
+                    f"Failed to forward {message.id} (src thread {src_thread_id} → dest thread {dest_thread_id}): {e}"
                 )
 
-        await asyncio.sleep(SLEEP_BETWEEN_FORWARDS)
+            if message.pinned and new_message is not None:
+                if await pin_in_destination(app, new_message.id):
+                    pinned_count += 1
+                    logger.info(
+                        f"📌 Pinned {new_message.id} in dest thread {dest_thread_id} (was pinned in source as {message.id})"
+                    )
+
+            await asyncio.sleep(SLEEP_BETWEEN_FORWARDS)
 
     if pinned_count:
         logger.info(f"Pinned {pinned_count} messages in dest thread {dest_thread_id}")
@@ -162,7 +178,12 @@ async def populate_thread(
     return forwarded
 
 
-async def main(debug: bool = False):
+async def main(debug: bool = False, no_forward: bool = False, no_db: bool = False, no_redis: bool = False):
+    if no_forward:
+        logger.warning("--no-forward enabled — messages will NOT be forwarded")
+    if no_db:
+        logger.warning("--no-db enabled — messages will NOT be saved to DB")
+
     mapping = load_enabled_mapping()
     logger.info(f"Loaded {len(mapping)} enabled thread mappings")
 
@@ -179,7 +200,15 @@ async def main(debug: bool = False):
         logger.info(f"Debug mode ON — dumping messages to {DEBUG_DUMP_PATH}")
 
     db = await init_db()
-    logger.info("Database initialized")
+
+    if no_redis:
+        r, stop, worker = None, None, None
+        logger.info("Database initialized (Redis skipped — saving directly to DB)")
+    else:
+        r = await connect_redis()
+        stop = asyncio.Event()
+        worker = asyncio.create_task(db_worker(r, db, stop))
+        logger.info("Database and Redis worker initialized")
 
     try:
         async with Client("session/mi_session", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING) as app:
@@ -197,14 +226,29 @@ async def main(debug: bool = False):
 
             for src_thread_id, dest_thread_id in mapping.items():
                 logger.info(f"Populating: src thread {src_thread_id} → dest thread {dest_thread_id}")
-                count = await populate_thread(app, src_thread_id, dest_thread_id, stats, debug_fh, db=db)
+                count = await populate_thread(
+                    app,
+                    src_thread_id,
+                    dest_thread_id,
+                    stats,
+                    debug_fh,
+                    redis=r,
+                    db=db if no_redis else None,
+                    no_forward=no_forward,
+                    no_db=no_db,
+                )
                 total_forwarded += count
                 logger.info(f"Done: forwarded {count} messages to dest thread {dest_thread_id}")
     finally:
         if debug_fh:
             debug_fh.close()
+        if r is not None:
+            await drain_and_stop(r, stop, worker)
+            await r.aclose()
+            logger.info("Database and Redis closed")
+        else:
+            logger.info("Database closed")
         await db.dispose()
-        logger.info("Database closed")
 
     logger.info("=" * 60)
     logger.info(f"Summary — forwarded: {total_forwarded}")
@@ -222,6 +266,21 @@ parser.add_argument(
     action="store_true",
     help=f"Dump every fetched message's repr to {DEBUG_DUMP_PATH}",
 )
+parser.add_argument(
+    "--no-forward",
+    action="store_true",
+    help="Fetch and optionally save messages to DB, but do not forward to destination chat",
+)
+parser.add_argument(
+    "--no-db",
+    action="store_true",
+    help="Skip saving messages to the database",
+)
+parser.add_argument(
+    "--no-redis",
+    action="store_true",
+    help="Skip Redis queue and save directly to DB (useful for local dev without Redis)",
+)
 args = parser.parse_args()
 
-asyncio.run(main(debug=args.debug))
+asyncio.run(main(debug=args.debug, no_forward=args.no_forward, no_db=args.no_db, no_redis=args.no_redis))
