@@ -34,4 +34,9 @@ def setup_logging(name: str) -> logging.Logger:
     logging.getLogger("pyrogram").setLevel(logging.INFO)
     logging.getLogger("pyrogram.types.messages_and_media.message").setLevel(logging.ERROR)
     logging.getLogger("pyrogram.types.user_and_chats.user").setLevel(logging.ERROR)
+
+    db_log_level = getattr(logging, os.environ.get("DB_LOG_LEVEL", "WARNING").upper(), logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(db_log_level)
+    logging.getLogger("sqlalchemy.engine").setLevel(db_log_level)
+
     return logging.getLogger(name)
