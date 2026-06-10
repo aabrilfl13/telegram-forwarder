@@ -260,19 +260,25 @@ async def link_mirror_topics(
         await conn.execute(_topics.update().where(_topics.c.id == dest_id).values(mirror_topic_id=src_id))
 
 
+def _to_raw_json(source) -> str | None:
+    """Serialize a Pyrogram Message or plain dict to a JSON string for raw_json storage."""
+    try:
+        if isinstance(source, dict):
+            return json.dumps(source, default=str)
+        return str(source)  # Pyrogram Object.__str__ returns JSON via Object.default
+    except Exception:
+        return None
+
+
 async def save_message(engine: AsyncEngine, message) -> int:
     """Persist a Telegram message and its media. Accepts a Pyrogram Message or a
     plain dict (e.g. deserialized from Redis). Returns the messages.id row id."""
+    raw_json = _to_raw_json(message)
     message = _to_msg(message)
     media_type, media_obj = _extract_media(message)
     text = getattr(message, "text", None) or getattr(message, "caption", None)
     date = getattr(message, "date", None)
     date_str = date.isoformat() if hasattr(date, "isoformat") else (str(date) if date else None)
-
-    try:
-        raw_json = json.dumps(message.to_dict(), default=str) if hasattr(message, "to_dict") else None
-    except Exception:
-        raw_json = None
 
     async with engine.begin() as conn:
         await _upsert_chat(engine, conn, message.chat)
